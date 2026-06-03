@@ -1,0 +1,14 @@
+{
+  "domain": "livebox_monitor",
+  "name": "Livebox Monitor",
+  "version": "1.0.0",
+  "codeowners": ["@votre-pseudo-github"],
+  "requirements": ["aiohttp>=3.9.0"],
+  "dependencies": [],
+  "after_dependencies": [],
+  "iot_class": "local_polling",
+  "config_flow": true,
+  "documentation": "https://github.com/votre-pseudo-github/hacs-livebox-monitor",
+  "issue_tracker": "https://github.com/votre-pseudo-github/hacs-livebox-monitor/issues",
+  "integration_type": "hub"
+}

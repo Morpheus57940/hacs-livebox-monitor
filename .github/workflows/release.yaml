@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    name: Créer la release GitHub
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Créer le zip de l'intégration
+        run: |
+          cd custom_components
+          zip -r ../livebox_monitor.zip livebox_monitor/
+          cd ..
+          zip -r livebox_monitor_full.zip \
+            custom_components/ \
+            www/ \
+            hacs.json \
+            README.md
+
+      - name: Créer la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            livebox_monitor.zip
+            livebox_monitor_full.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
