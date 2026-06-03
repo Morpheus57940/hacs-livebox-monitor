@@ -1,7 +1,6 @@
-"""Client API pour la Livebox Orange (TR-069 / API HTTP locale)."""
+"""Client API pour la Livebox Orange — compatible LB4/5/6/7 (sysbus JSON)."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -9,9 +8,22 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
+# La Livebox 7 répond sur livebox.home/ws ou 192.168.1.1/ws (même port 80)
+# L'URL d'auth a changé : /authenticate → /api/v1/login sur certains firmwares LB7
+# On tente les deux automatiquement via auto-detect
+
 LIVEBOX_PORT = 80
-AUTH_URL = "http://{host}:{port}/authenticate"
-WS_URL = "http://{host}:{port}/ws"
+
+# Endpoints selon génération
+AUTH_ENDPOINTS = [
+    "/authenticate",          # LB4 / LB5 / LB6
+    "/api/v1/login",          # LB7 firmware récent
+    "/sysbus/authenticate",   # variante sysbus
+]
+WS_ENDPOINTS = [
+    "/ws",                    # LB4/5/6 et LB7
+    "/sysbus",                # variante
+]
 
 SYSBUS_HEADERS = {
     "Content-Type": "application/x-sysbus-json",
@@ -28,7 +40,7 @@ class LiveboxConnectionError(Exception):
 
 
 class LiveboxAPI:
-    """Client asynchrone pour l'API Livebox."""
+    """Client asynchrone pour l'API Livebox — LB4 à LB7."""
 
     def __init__(
         self,
@@ -44,15 +56,66 @@ class LiveboxAPI:
         self._password = password
         self._session = session
         self._auth_token: str | None = None
-        self._session_id: str | None = None
+        self._auth_url: str | None = None   # détecté automatiquement
+        self._ws_url: str | None = None     # détecté automatiquement
+
+    def _base(self) -> str:
+        return f"http://{self._host}:{self._port}"
+
+    # ------------------------------------------------------------------
+    # Auto-détection de génération (LB4/5/6 vs LB7)
+    # ------------------------------------------------------------------
+
+    async def _detect_endpoints(self) -> None:
+        """Détecter automatiquement les bons endpoints selon le firmware."""
+        base = self._base()
+
+        # Détection endpoint WS
+        for ep in WS_ENDPOINTS:
+            try:
+                async with self._session.get(
+                    f"{base}{ep}",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    allow_redirects=False,
+                ) as r:
+                    # 200, 401, 403 = endpoint existe
+                    if r.status in (200, 401, 403, 405):
+                        self._ws_url = f"{base}{ep}"
+                        _LOGGER.debug("WS endpoint détecté : %s", self._ws_url)
+                        break
+            except Exception:
+                continue
+
+        if not self._ws_url:
+            self._ws_url = f"{base}/ws"  # fallback
+
+        # Détection endpoint auth
+        for ep in AUTH_ENDPOINTS:
+            try:
+                async with self._session.post(
+                    f"{base}{ep}",
+                    json={"service": "test", "method": "test", "parameters": {}},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as r:
+                    if r.status in (200, 401, 403):
+                        self._auth_url = f"{base}{ep}"
+                        _LOGGER.debug("Auth endpoint détecté : %s", self._auth_url)
+                        break
+            except Exception:
+                continue
+
+        if not self._auth_url:
+            self._auth_url = f"{base}/authenticate"  # fallback LB4-6
 
     # ------------------------------------------------------------------
     # Authentification
     # ------------------------------------------------------------------
 
     async def authenticate(self) -> bool:
-        """S'authentifier auprès de la Livebox et récupérer le token."""
-        url = AUTH_URL.format(host=self._host, port=self._port)
+        """S'authentifier et récupérer le token de contexte."""
+        if not self._auth_url:
+            await self._detect_endpoints()
+
         payload = {
             "service": "sah.Device.Information",
             "method": "createContext",
@@ -64,28 +127,34 @@ class LiveboxAPI:
         }
         try:
             async with self._session.post(
-                url, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+                self._auth_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
+                if resp.status == 404:
+                    # Fallback : essayer l'autre endpoint
+                    _LOGGER.warning("Auth 404 sur %s, tentative fallback…", self._auth_url)
+                    self._auth_url = None
+                    await self._detect_endpoints()
+                    return await self.authenticate()
                 if resp.status != 200:
-                    raise LiveboxAuthError(f"HTTP {resp.status}")
+                    raise LiveboxAuthError(f"HTTP {resp.status} sur {self._auth_url}")
                 data = await resp.json(content_type=None)
                 status = data.get("status", 0)
                 if status != 0:
-                    raise LiveboxAuthError(f"Auth failed, status={status}")
+                    raise LiveboxAuthError(f"Auth échouée, status={status}")
                 ctx = data.get("data", {})
                 self._auth_token = ctx.get("contextID")
-                self._session_id = ctx.get("username")
-                _LOGGER.debug("Livebox auth OK, contextID=%s", self._auth_token)
+                _LOGGER.debug("Auth OK — token=%s endpoint=%s", self._auth_token, self._auth_url)
                 return True
         except aiohttp.ClientError as exc:
             raise LiveboxConnectionError(str(exc)) from exc
 
     async def _post(self, service: str, method: str, parameters: dict | None = None) -> Any:
-        """Effectuer un appel API JSON vers la Livebox."""
+        """Appel API JSON vers la Livebox."""
         if not self._auth_token:
             await self.authenticate()
 
-        url = WS_URL.format(host=self._host, port=self._port)
         headers = {
             **SYSBUS_HEADERS,
             "X-Context": self._auth_token or "",
@@ -98,13 +167,13 @@ class LiveboxAPI:
         }
         try:
             async with self._session.post(
-                url,
+                self._ws_url,
                 json=payload,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 401:
-                    _LOGGER.debug("Token expiré, ré-authentification…")
+                    _LOGGER.debug("Token expiré, ré-auth…")
                     self._auth_token = None
                     await self.authenticate()
                     return await self._post(service, method, parameters)
@@ -121,34 +190,33 @@ class LiveboxAPI:
     # ------------------------------------------------------------------
 
     async def get_devices(self) -> list[dict]:
-        """Retourner la liste de tous les appareils connus."""
+        """Liste de tous les appareils connus."""
         result = await self._post(
             "Devices",
             "get",
-            {"expression": {"ETHERNET": "not interface and not self", "WIFI": "not interface and not self"}},
+            {"expression": {
+                "ETHERNET": "not interface and not self",
+                "WIFI": "not interface and not self",
+            }},
         )
         if not result:
             return []
         devices = []
-        for expr_result in (result if isinstance(result, list) else [result]):
-            if isinstance(expr_result, list):
-                devices.extend(expr_result)
-            elif isinstance(expr_result, dict):
-                devices.append(expr_result)
+        for item in (result if isinstance(result, list) else [result]):
+            if isinstance(item, list):
+                devices.extend(item)
+            elif isinstance(item, dict):
+                devices.append(item)
         return devices
 
     async def get_active_devices(self) -> list[dict]:
-        """Retourner uniquement les appareils actuellement connectés."""
-        all_devices = await self.get_devices()
-        return [d for d in all_devices if d.get("Active", False)]
+        """Appareils actuellement connectés."""
+        return [d for d in await self.get_devices() if d.get("Active", False)]
 
     async def get_device_by_mac(self, mac: str) -> dict | None:
-        """Obtenir les détails d'un appareil par son adresse MAC."""
-        devices = await self.get_devices()
-        mac_upper = mac.upper()
-        for device in devices:
-            if device.get("PhysAddress", "").upper() == mac_upper:
-                return device
+        for d in await self.get_devices():
+            if d.get("PhysAddress", "").upper() == mac.upper():
+                return d
         return None
 
     # ------------------------------------------------------------------
@@ -156,44 +224,19 @@ class LiveboxAPI:
     # ------------------------------------------------------------------
 
     async def get_wan_status(self) -> dict:
-        """Statut de la connexion WAN (fibre/ADSL)."""
-        result = await self._post("NMC", "getWANStatus", {})
-        return result or {}
-
-    async def get_lan_ip_stats(self) -> dict:
-        """Statistiques IP LAN."""
-        result = await self._post(
-            "NeMo.Intf.data",
-            "getMIBs",
-            {"mibs": "eth", "flag": "", "traverse": "all"},
-        )
-        return result or {}
+        return await self._post("NMC", "getWANStatus", {}) or {}
 
     async def get_interfaces_stats(self) -> dict:
-        """Statistiques de trafic par interface."""
-        result = await self._post(
-            "NeMo.Intf.lo",
-            "getMIBs",
+        return await self._post(
+            "NeMo.Intf.lo", "getMIBs",
             {"mibs": "base", "flag": "stat", "traverse": "all"},
-        )
-        return result or {}
+        ) or {}
 
     async def get_wifi_stats(self) -> dict:
-        """Informations et statistiques Wi-Fi."""
-        result = await self._post(
-            "NMC.Wifi",
-            "get",
-            {},
-        )
-        return result or {}
+        return await self._post("NMC.Wifi", "get", {}) or {}
 
     async def get_dhcp_leases(self) -> list[dict]:
-        """Baux DHCP actifs."""
-        result = await self._post(
-            "DHCPv4.Server.Pool.default",
-            "getStaticLeases",
-            {},
-        )
+        result = await self._post("DHCPv4.Server.Pool.default", "getStaticLeases", {})
         return result if isinstance(result, list) else []
 
     # ------------------------------------------------------------------
@@ -201,74 +244,55 @@ class LiveboxAPI:
     # ------------------------------------------------------------------
 
     async def get_device_info(self) -> dict:
-        """Informations matérielles de la Livebox."""
-        result = await self._post(
-            "DeviceInfo",
-            "get",
-            {},
-        )
-        return result or {}
-
-    async def get_time(self) -> dict:
-        """Heure système de la Livebox."""
-        result = await self._post("Time", "getTime", {})
-        return result or {}
+        return await self._post("DeviceInfo", "get", {}) or {}
 
     async def get_uptime(self) -> int:
-        """Uptime en secondes."""
-        info = await self.get_device_info()
-        return info.get("UpTime", 0)
+        return (await self.get_device_info()).get("UpTime", 0)
 
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
     async def block_device(self, mac: str) -> bool:
-        """Bloquer un appareil par son adresse MAC."""
         result = await self._post(
-            "Devices.Device." + mac.upper(),
-            "setParameters",
+            f"Devices.Device.{mac.upper()}", "setParameters",
             {"parameters": {"Blocked": True}},
         )
         return result is not None
 
     async def unblock_device(self, mac: str) -> bool:
-        """Débloquer un appareil par son adresse MAC."""
         result = await self._post(
-            "Devices.Device." + mac.upper(),
-            "setParameters",
+            f"Devices.Device.{mac.upper()}", "setParameters",
             {"parameters": {"Blocked": False}},
         )
         return result is not None
 
     async def assign_device_name(self, mac: str, name: str) -> bool:
-        """Assigner un nom à un appareil."""
         result = await self._post(
-            "Devices.Device." + mac.upper(),
-            "setName",
+            f"Devices.Device.{mac.upper()}", "setName",
             {"source": "webui", "name": name},
         )
         return result is not None
 
     async def reboot(self) -> bool:
-        """Redémarrer la Livebox."""
-        result = await self._post("NMC", "reboot", {"reason": "home_assistant"})
-        return result is not None
+        return await self._post("NMC", "reboot", {"reason": "home_assistant"}) is not None
 
     async def scan_network(self) -> bool:
-        """Forcer un scan du réseau."""
-        result = await self._post("Devices", "find", {})
-        return result is not None
+        return await self._post("Devices", "find", {}) is not None
 
     # ------------------------------------------------------------------
-    # Test de connexion
+    # Test de connexion (utilisé par config_flow)
     # ------------------------------------------------------------------
 
     async def test_connection(self) -> bool:
-        """Tester la connexion et l'authentification."""
+        """Tester la connexion — détecte automatiquement le bon endpoint."""
         try:
+            await self._detect_endpoints()
             await self.authenticate()
             info = await self.get_device_info()
+            lb_model = info.get("ProductClass", "Unknown")
+            _LOGGER.info("Livebox détectée : %s (endpoint: %s)", lb_model, self._auth_url)
             return bool(info)
-        except (LiveboxAuthError, LiveboxConnectionError):
+        except (LiveboxAuthError, LiveboxConnectionError) as exc:
+            _LOGGER.error("test_connection échoué : %s", exc)
             return False
