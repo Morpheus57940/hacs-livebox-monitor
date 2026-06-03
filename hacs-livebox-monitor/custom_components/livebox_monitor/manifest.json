@@ -1,0 +1,14 @@
+{
+  "domain": "livebox_monitor",
+  "name": "Livebox Monitor",
+  "after_dependencies": [],
+  "codeowners": ["@Morpheus57940"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Morpheus57940/hacs-livebox-monitor",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Morpheus57940/hacs-livebox-monitor/issues",
+  "requirements": ["aiohttp>=3.9.0"],
+  "version": "1.0.0"
+}

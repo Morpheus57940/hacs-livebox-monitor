@@ -1,0 +1,49 @@
+block_device:
+  name: Bloquer un appareil
+  description: Bloquer l'accès réseau d'un appareil via son adresse MAC.
+  fields:
+    mac:
+      name: Adresse MAC
+      description: Adresse MAC de l'appareil à bloquer (ex. AA:BB:CC:DD:EE:FF)
+      required: true
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+
+unblock_device:
+  name: Débloquer un appareil
+  description: Rétablir l'accès réseau d'un appareil précédemment bloqué.
+  fields:
+    mac:
+      name: Adresse MAC
+      description: Adresse MAC de l'appareil à débloquer
+      required: true
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+
+assign_name:
+  name: Nommer un appareil
+  description: Assigner un nom personnalisé à un appareil.
+  fields:
+    mac:
+      name: Adresse MAC
+      required: true
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    name:
+      name: Nom
+      description: Nom à assigner à l'appareil
+      required: true
+      example: "Mon PC de bureau"
+      selector:
+        text:
+
+reboot:
+  name: Redémarrer la Livebox
+  description: Redémarrer la Livebox à distance. La connexion sera coupée pendant ~2 minutes.
+
+scan_network:
+  name: Scanner le réseau
+  description: Forcer un scan immédiat des appareils connectés.

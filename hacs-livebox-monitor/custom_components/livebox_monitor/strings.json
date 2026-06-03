@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configurer Livebox Monitor",
+        "description": "Saisissez les informations de connexion à votre Livebox Orange.",
+        "data": {
+          "host": "Adresse IP de la Livebox",
+          "port": "Port (défaut : 80)",
+          "username": "Identifiant (défaut : admin)",
+          "password": "Mot de passe"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossible de se connecter à la Livebox. Vérifiez l'adresse IP.",
+      "invalid_auth": "Authentification échouée. Vérifiez l'identifiant et le mot de passe.",
+      "unknown": "Erreur inattendue. Consultez les logs pour plus de détails."
+    },
+    "abort": {
+      "already_configured": "Cette Livebox est déjà configurée."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options Livebox Monitor",
+        "data": {
+          "scan_interval": "Intervalle de mise à jour (secondes)",
+          "track_new_devices": "Suivre automatiquement les nouveaux appareils",
+          "notify_unknown_devices": "Notifier lors de la détection d'un appareil inconnu"
+        }
+      }
+    }
+  }
+}
